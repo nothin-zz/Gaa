@@ -1,0 +1,352 @@
+//@version=5
+indicator("🏆 GOLD MASTER SYSTEM - XAUUSD", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=200)
+
+// ============================================================
+//   GOLD MASTER SYSTEM — 6 strategiya kombinatsiyasi
+//   Mualif: Gold Master | XAUUSD uchun optimallashtirilgan
+// ============================================================
+
+// ─────────────────────────────────────────
+// ⚙️  SOZLAMALAR
+// ─────────────────────────────────────────
+grp1 = "📈 EMA Sozlamalari"
+ema_fast   = input.int(50,  "EMA Fast",  group=grp1)
+ema_slow   = input.int(200, "EMA Slow",  group=grp1)
+
+grp2 = "📊 RSI Sozlamalari"
+rsi_len    = input.int(14,  "RSI Davri", group=grp2)
+rsi_ob     = input.int(70,  "Overbought", group=grp2)
+rsi_os     = input.int(30,  "Oversold",  group=grp2)
+
+grp3 = "🎯 Risk Management"
+rr_ratio   = input.float(2.0, "RR nisbati (TP = SL × RR)", step=0.5, group=grp3)
+sl_mult    = input.float(1.5, "SL ATR ko'paytmasi",         step=0.1, group=grp3)
+
+grp4 = "🕐 Kill Zone (UTC+5 Toshkent)"
+show_kz    = input.bool(true, "Kill Zoneni ko'rsat", group=grp4)
+
+grp5 = "🔧 Ko'rsatish Sozlamalari"
+show_ema   = input.bool(true,  "EMA chiziqlarini ko'rsat",   group=grp5)
+show_fib   = input.bool(true,  "Fibonacci darajalarini ko'rsat", group=grp5)
+show_sd    = input.bool(true,  "Supply/Demand zonalarini ko'rsat", group=grp5)
+show_sig   = input.bool(true,  "Entry/TP/SL signallarini ko'rsat", group=grp5)
+show_dash  = input.bool(true,  "Dashboard ko'rsat",          group=grp5)
+
+// ─────────────────────────────────────────
+// 1️⃣  TREND FILTER — EMA 50 & EMA 200
+// ─────────────────────────────────────────
+ema50  = ta.ema(close, ema_fast)
+ema200 = ta.ema(close, ema_slow)
+
+bullTrend = close > ema200 and ema50 > ema200
+bearTrend = close < ema200 and ema50 < ema200
+
+plot(show_ema ? ema50  : na, "EMA 50",  color=color.new(#FFD700, 0), linewidth=2)
+plot(show_ema ? ema200 : na, "EMA 200", color=color.new(#FF6B6B, 0), linewidth=3)
+
+// EMA Cross signal
+emaCrossBull = ta.crossover(ema50,  ema200)
+emaCrossBear = ta.crossunder(ema50, ema200)
+
+// ─────────────────────────────────────────
+// 2️⃣  BOS / CHoCH — Tuzilma sinishi
+// ─────────────────────────────────────────
+swing_len = 10
+
+swingHigh = ta.pivothigh(high, swing_len, swing_len)
+swingLow  = ta.pivotlow (low,  swing_len, swing_len)
+
+var float lastHigh = na
+var float lastLow  = na
+var float prevHigh = na
+var float prevLow  = na
+
+if not na(swingHigh)
+    prevHigh := lastHigh
+    lastHigh := swingHigh
+
+if not na(swingLow)
+    prevLow := lastLow
+    lastLow := swingLow
+
+// BOS: tuzilma sinishi (trend davom etadi)
+bos_bull = not na(lastHigh) and not na(prevHigh) and close > lastHigh[swing_len] and bullTrend
+bos_bear = not na(lastLow)  and not na(prevLow)  and close < lastLow[swing_len]  and bearTrend
+
+// CHoCH: xarakter o'zgarishi (trend burilishi)
+choch_bull = not na(lastHigh) and close > lastHigh[swing_len] and bearTrend
+choch_bear = not na(lastLow)  and close < lastLow[swing_len]  and bullTrend
+
+plotshape(bos_bull,  "BOS ↑", shape.labelup,   location.belowbar, color.new(#00E676, 20), text="BOS", textcolor=color.white, size=size.tiny)
+plotshape(bos_bear,  "BOS ↓", shape.labeldown, location.abovebar, color.new(#FF1744, 20), text="BOS", textcolor=color.white, size=size.tiny)
+plotshape(choch_bull,"CHoCH↑",shape.labelup,   location.belowbar, color.new(#00BCD4, 0),  text="CHoCH",textcolor=color.white, size=size.small)
+plotshape(choch_bear,"CHoCH↓",shape.labeldown, location.abovebar, color.new(#FF9800, 0),  text="CHoCH",textcolor=color.white, size=size.small)
+
+// ─────────────────────────────────────────
+// 3️⃣  SUPPLY & DEMAND ZONES
+// ─────────────────────────────────────────
+sd_len  = 20
+atr_val = ta.atr(14)
+
+demandHigh = ta.lowest(low, sd_len)  + atr_val * 0.3
+demandLow  = ta.lowest(low, sd_len)  - atr_val * 0.1
+supplyLow  = ta.highest(high, sd_len) - atr_val * 0.3
+supplyHigh = ta.highest(high, sd_len) + atr_val * 0.1
+
+var box demandBox = na
+var box supplyBox = na
+
+inDemand = low <= demandHigh and low >= demandLow
+inSupply = high >= supplyLow and high <= supplyHigh
+
+if show_sd and inDemand
+    demandBox := box.new(bar_index - sd_len, demandHigh, bar_index + 20,
+                 demandLow, border_color=color.new(#00E676, 30),
+                 bgcolor=color.new(#00E676, 85), border_width=1)
+
+if show_sd and inSupply
+    supplyBox := box.new(bar_index - sd_len, supplyHigh, bar_index + 20,
+                 supplyLow, border_color=color.new(#FF1744, 30),
+                 bgcolor=color.new(#FF1744, 85), border_width=1)
+
+// ─────────────────────────────────────────
+// 4️⃣  RSI DIVERGENCE
+// ─────────────────────────────────────────
+rsi = ta.rsi(close, rsi_len)
+
+rsiPH = ta.pivothigh(rsi,  5, 5)
+rsiPL = ta.pivotlow (rsi,  5, 5)
+prcPH = ta.pivothigh(high, 5, 5)
+prcPL = ta.pivotlow (low,  5, 5)
+
+// Bullish divergence: narx yangi low, RSI yuqoriroq low
+bullDiv = not na(rsiPL) and not na(prcPL) and
+          prcPL < ta.valuewhen(not na(prcPL), prcPL, 1) and
+          rsiPL  > ta.valuewhen(not na(rsiPL), rsiPL, 1) and
+          rsi < rsi_os + 15
+
+// Bearish divergence: narx yangi high, RSI pastroq high
+bearDiv = not na(rsiPH) and not na(prcPH) and
+          prcPH > ta.valuewhen(not na(prcPH), prcPH, 1) and
+          rsiPH  < ta.valuewhen(not na(rsiPH), rsiPH, 1) and
+          rsi > rsi_ob - 15
+
+plotshape(bullDiv, "Bull Div", shape.triangleup,   location.belowbar, color.new(#69F0AE, 0), text="DIV↑", textcolor=#69F0AE, size=size.small)
+plotshape(bearDiv, "Bear Div", shape.triangledown, location.abovebar, color.new(#FF6E6E, 0), text="DIV↓", textcolor=#FF6E6E, size=size.small)
+
+// ─────────────────────────────────────────
+// 5️⃣  FIBONACCI RETRACEMENT (auto)
+// ─────────────────────────────────────────
+fib_period = 50
+fibHigh = ta.highest(high, fib_period)
+fibLow  = ta.lowest (low,  fib_period)
+fibRange = fibHigh - fibLow
+
+fib236 = fibHigh - fibRange * 0.236
+fib382 = fibHigh - fibRange * 0.382
+fib500 = fibHigh - fibRange * 0.500
+fib618 = fibHigh - fibRange * 0.618
+fib786 = fibHigh - fibRange * 0.786
+
+plot(show_fib ? fib236 : na, "Fib 0.236", color=color.new(#B39DDB, 60), linewidth=1, style=plot.style_linebr)
+plot(show_fib ? fib382 : na, "Fib 0.382", color=color.new(#9C27B0, 50), linewidth=1, style=plot.style_linebr)
+plot(show_fib ? fib500 : na, "Fib 0.500", color=color.new(#FFD700, 40), linewidth=2, style=plot.style_linebr)
+plot(show_fib ? fib618 : na, "Fib 0.618", color=color.new(#FF9800, 40), linewidth=2, style=plot.style_linebr)
+plot(show_fib ? fib786 : na, "Fib 0.786", color=color.new(#FF5722, 40), linewidth=1, style=plot.style_linebr)
+
+// ─────────────────────────────────────────
+// 6️⃣  KILL ZONES (UTC vaqtida)
+// ─────────────────────────────────────────
+londonOpen = show_kz and (hour(time, "UTC") == 7  and minute(time,"UTC") >= 0  and hour(time,"UTC") <= 9)
+nyOpen     = show_kz and (hour(time, "UTC") == 11 and minute(time,"UTC") >= 30 and hour(time,"UTC") <= 13)
+asianSess  = show_kz and (hour(time, "UTC") >= 22 and hour(time,"UTC") <= 24)
+
+bgcolor(londonOpen ? color.new(#FFD700, 90) : na, title="London Kill Zone")
+bgcolor(nyOpen     ? color.new(#00E5FF, 90) : na, title="NY Kill Zone")
+bgcolor(asianSess  ? color.new(#CE93D8, 92) : na, title="Asian Session")
+
+// ─────────────────────────────────────────
+// 🔢  SIGNAL SCORE HISOBLASH (0-6 ball)
+// ─────────────────────────────────────────
+nearFib = (math.abs(close - fib618) < atr_val * 0.5) or
+          (math.abs(close - fib500) < atr_val * 0.5) or
+          (math.abs(close - fib786) < atr_val * 0.5)
+
+inKillZone = londonOpen or nyOpen
+
+// BUY score
+buyScore = (bullTrend  ? 1 : 0) +
+           (bos_bull or choch_bull ? 1 : 0) +
+           (inDemand   ? 1 : 0) +
+           (bullDiv    ? 1 : 0) +
+           (nearFib    ? 1 : 0) +
+           (inKillZone ? 1 : 0)
+
+// SELL score
+sellScore = (bearTrend  ? 1 : 0) +
+            (bos_bear or choch_bear ? 1 : 0) +
+            (inSupply   ? 1 : 0) +
+            (bearDiv    ? 1 : 0) +
+            (nearFib    ? 1 : 0) +
+            (inKillZone ? 1 : 0)
+
+// ─────────────────────────────────────────
+// 🚀  ENTRY / TP / SL CHIZIQLARI
+// ─────────────────────────────────────────
+strongBuy  = buyScore  >= 4 and show_sig
+strongSell = sellScore >= 4 and show_sig
+
+// SL & TP hisoblash
+sl_dist = atr_val * sl_mult
+tp_dist = sl_dist * rr_ratio
+
+// BUY signal
+if strongBuy
+    entry = close
+    sl    = entry - sl_dist
+    tp1   = entry + (tp_dist * 0.5)
+    tp2   = entry + tp_dist
+    tp3   = entry + tp_dist * 1.5
+
+    scoreLabel = buyScore >= 5 ? "🔥 PREMIUM BUY" : "✅ BUY"
+
+    // Entry label
+    label.new(bar_index, entry, scoreLabel + "\nEntry: " + str.tostring(entry, "#.##") +
+              "\n📊 Score: " + str.tostring(buyScore) + "/6",
+              color=color.new(#00C853, 10), textcolor=color.white,
+              style=label.style_label_up, size=size.normal, yloc=yloc.belowbar)
+
+    // TP chiziqlar
+    line.new(bar_index, tp1, bar_index + 30, tp1, color=color.new(#69F0AE, 0), width=2, style=line.style_dashed)
+    line.new(bar_index, tp2, bar_index + 30, tp2, color=color.new(#00E676, 0), width=2, style=line.style_dashed)
+    line.new(bar_index, tp3, bar_index + 30, tp3, color=color.new(#00C853, 0), width=3)
+
+    // TP labellar
+    label.new(bar_index + 30, tp1, "TP1: " + str.tostring(tp1, "#.##"), color=color.new(#00E676,0), textcolor=color.white, size=size.small, style=label.style_label_left)
+    label.new(bar_index + 30, tp2, "TP2: " + str.tostring(tp2, "#.##"), color=color.new(#00E676,0), textcolor=color.white, size=size.small, style=label.style_label_left)
+    label.new(bar_index + 30, tp3, "TP3: " + str.tostring(tp3, "#.##"), color=color.new(#00C853,0), textcolor=color.white, size=size.small, style=label.style_label_left)
+
+    // SL chizig'i
+    line.new(bar_index, sl, bar_index + 30, sl, color=color.new(#FF1744, 0), width=2)
+    label.new(bar_index + 30, sl, "SL: " + str.tostring(sl, "#.##"), color=color.new(#FF1744, 0), textcolor=color.white, size=size.small, style=label.style_label_left)
+
+    // Entry chizig'i
+    line.new(bar_index, entry, bar_index + 30, entry, color=color.new(#FFD700, 0), width=2, style=line.style_dotted)
+
+// SELL signal
+if strongSell
+    entry = close
+    sl    = entry + sl_dist
+    tp1   = entry - (tp_dist * 0.5)
+    tp2   = entry - tp_dist
+    tp3   = entry - tp_dist * 1.5
+
+    scoreLabel = sellScore >= 5 ? "🔥 PREMIUM SELL" : "✅ SELL"
+
+    label.new(bar_index, entry, scoreLabel + "\nEntry: " + str.tostring(entry, "#.##") +
+              "\n📊 Score: " + str.tostring(sellScore) + "/6",
+              color=color.new(#D50000, 10), textcolor=color.white,
+              style=label.style_label_down, size=size.normal, yloc=yloc.abovebar)
+
+    line.new(bar_index, tp1, bar_index + 30, tp1, color=color.new(#FF8A80, 0), width=2, style=line.style_dashed)
+    line.new(bar_index, tp2, bar_index + 30, tp2, color=color.new(#FF5252, 0), width=2, style=line.style_dashed)
+    line.new(bar_index, tp3, bar_index + 30, tp3, color=color.new(#D50000, 0), width=3)
+
+    label.new(bar_index + 30, tp1, "TP1: " + str.tostring(tp1, "#.##"), color=color.new(#FF5252,0), textcolor=color.white, size=size.small, style=label.style_label_left)
+    label.new(bar_index + 30, tp2, "TP2: " + str.tostring(tp2, "#.##"), color=color.new(#FF5252,0), textcolor=color.white, size=size.small, style=label.style_label_left)
+    label.new(bar_index + 30, tp3, "TP3: " + str.tostring(tp3, "#.##"), color=color.new(#D50000,0), textcolor=color.white, size=size.small, style=label.style_label_left)
+
+    line.new(bar_index, sl, bar_index + 30, sl, color=color.new(#00E676, 0), width=2)
+    label.new(bar_index + 30, sl, "SL: " + str.tostring(sl, "#.##"), color=color.new(#00E676, 0), textcolor=color.white, size=size.small, style=label.style_label_left)
+
+    line.new(bar_index, entry, bar_index + 30, entry, color=color.new(#FFD700, 0), width=2, style=line.style_dotted)
+
+// ─────────────────────────────────────────
+// 📊  DASHBOARD (o'ng yuqori burchak)
+// ─────────────────────────────────────────
+if show_dash and barstate.islast
+    var table dash = table.new(position.top_right, 2, 14,
+                    bgcolor=color.new(#0D1117, 5),
+                    border_color=color.new(#FFD700, 40), border_width=1,
+                    frame_color=color.new(#FFD700,20), frame_width=2)
+
+    trendColor = bullTrend ? color.new(#00E676,0) : bearTrend ? color.new(#FF1744,0) : color.new(#FFD700,0)
+    trendText  = bullTrend ? "📈 BULLISH" : bearTrend ? "📉 BEARISH" : "↔️ NEUTRAL"
+
+    // Header
+    table.cell(dash, 0, 0, "🏆 GOLD MASTER SYSTEM", text_color=color.new(#FFD700,0), text_size=size.small, bgcolor=color.new(#1A237E,20), text_halign=text.align_center)
+    table.cell(dash, 1, 0, "XAUUSD", text_color=color.new(#FFD700,0), text_size=size.small, bgcolor=color.new(#1A237E,20), text_halign=text.align_center)
+
+    // Trend
+    table.cell(dash, 0, 1, "Trend", text_color=color.new(#90A4AE,0), text_size=size.small)
+    table.cell(dash, 1, 1, trendText, text_color=trendColor, text_size=size.small)
+
+    // RSI
+    rsiColor = rsi > rsi_ob ? color.new(#FF5252,0) : rsi < rsi_os ? color.new(#69F0AE,0) : color.new(#FFD700,0)
+    table.cell(dash, 0, 2, "RSI (14)", text_color=color.new(#90A4AE,0), text_size=size.small)
+    table.cell(dash, 1, 2, str.tostring(math.round(rsi, 1)), text_color=rsiColor, text_size=size.small)
+
+    // ATR
+    table.cell(dash, 0, 3, "ATR (14)", text_color=color.new(#90A4AE,0), text_size=size.small)
+    table.cell(dash, 1, 3, str.tostring(math.round(atr_val, 2)), text_color=color.new(#B39DDB,0), text_size=size.small)
+
+    // EMA holatasi
+    table.cell(dash, 0, 4, "EMA 50/200", text_color=color.new(#90A4AE,0), text_size=size.small)
+    table.cell(dash, 1, 4, ema50 > ema200 ? "50 > 200 ✅" : "50 < 200 ❌", text_color=ema50>ema200?color.new(#00E676,0):color.new(#FF5252,0), text_size=size.small)
+
+    // Kill Zone
+    table.cell(dash, 0, 5, "Kill Zone", text_color=color.new(#90A4AE,0), text_size=size.small)
+    table.cell(dash, 1, 5, londonOpen ? "🟡 London" : nyOpen ? "🔵 New York" : asianSess ? "🟣 Asian" : "⚫ Yopiq", text_color=color.new(#FFD700,0), text_size=size.small)
+
+    // Divergence
+    table.cell(dash, 0, 6, "Divergence", text_color=color.new(#90A4AE,0), text_size=size.small)
+    table.cell(dash, 1, 6, bullDiv ? "🟢 BULL DIV" : bearDiv ? "🔴 BEAR DIV" : "Yo'q", text_color=bullDiv?color.new(#00E676,0):bearDiv?color.new(#FF5252,0):color.new(#546E7A,0), text_size=size.small)
+
+    // Fibonacci
+    table.cell(dash, 0, 7, "Fib Zona", text_color=color.new(#90A4AE,0), text_size=size.small)
+    table.cell(dash, 1, 7, nearFib ? "⭐ Yaqin" : "Yo'q", text_color=nearFib?color.new(#FFD700,0):color.new(#546E7A,0), text_size=size.small)
+
+    // Separator
+    table.cell(dash, 0, 8, "─────────────", text_color=color.new(#FFD700,40), text_size=size.small)
+    table.cell(dash, 1, 8, "─────────────", text_color=color.new(#FFD700,40), text_size=size.small)
+
+    // BUY Score
+    buyColor  = buyScore >= 5 ? color.new(#00E676,0) : buyScore >= 3 ? color.new(#69F0AE,0) : color.new(#546E7A,0)
+    buyStar   = buyScore >= 5 ? "🔥" : buyScore >= 3 ? "✅" : "⬜"
+    table.cell(dash, 0, 9,  "BUY Signal", text_color=color.new(#90A4AE,0), text_size=size.small)
+    table.cell(dash, 1, 9,  buyStar + " " + str.tostring(buyScore) + "/6", text_color=buyColor, text_size=size.small)
+
+    // SELL Score
+    sellColor = sellScore >= 5 ? color.new(#FF1744,0) : sellScore >= 3 ? color.new(#FF8A80,0) : color.new(#546E7A,0)
+    sellStar  = sellScore >= 5 ? "🔥" : sellScore >= 3 ? "✅" : "⬜"
+    table.cell(dash, 0, 10, "SELL Signal", text_color=color.new(#90A4AE,0), text_size=size.small)
+    table.cell(dash, 1, 10, sellStar + " " + str.tostring(sellScore) + "/6", text_color=sellColor, text_size=size.small)
+
+    // Separator
+    table.cell(dash, 0, 11, "─────────────", text_color=color.new(#FFD700,40), text_size=size.small)
+    table.cell(dash, 1, 11, "─────────────", text_color=color.new(#FFD700,40), text_size=size.small)
+
+    // Risk info
+    table.cell(dash, 0, 12, "RR Nisbat", text_color=color.new(#90A4AE,0), text_size=size.small)
+    table.cell(dash, 1, 12, "1 : " + str.tostring(rr_ratio), text_color=color.new(#CE93D8,0), text_size=size.small)
+
+    // Tavsiya
+    finalRec   = buyScore >= 4 and buyScore > sellScore ? (buyScore >= 5 ? "🔥 KUCHLI BUY" : "✅ BUY") :
+                 sellScore >= 4 and sellScore > buyScore ? (sellScore >= 5 ? "🔥 KUCHLI SELL" : "✅ SELL") : "⏳ KUTING"
+    finalColor = buyScore >= 4 and buyScore > sellScore ? color.new(#00E676,0) :
+                 sellScore >= 4 and sellScore > buyScore ? color.new(#FF1744,0) : color.new(#FFD700,0)
+
+    table.cell(dash, 0, 13, "QAROR", text_color=color.new(#FFD700,0), text_size=size.small, bgcolor=color.new(#1A237E,30))
+    table.cell(dash, 1, 13, finalRec, text_color=finalColor, text_size=size.small, bgcolor=color.new(#1A237E,30))
+
+// ─────────────────────────────────────────
+// 🔔  ALERT SHARTLARI
+// ─────────────────────────────────────────
+alertcondition(buyScore  >= 4, "🟢 BUY Signal",         "GOLD MASTER: BUY imkoniyati! Score: " + str.tostring(buyScore) + "/6")
+alertcondition(sellScore >= 4, "🔴 SELL Signal",        "GOLD MASTER: SELL imkoniyati! Score: " + str.tostring(sellScore) + "/6")
+alertcondition(buyScore  >= 5, "🔥 PREMIUM BUY Signal", "GOLD MASTER: PREMIUM BUY! Score: 5-6/6 — Kuchli signal!")
+alertcondition(sellScore >= 5, "🔥 PREMIUM SELL Signal","GOLD MASTER: PREMIUM SELL! Score: 5-6/6 — Kuchli signal!")
+alertcondition(emaCrossBull,   "EMA Bullish Cross",     "EMA 50 EMA 200 ni kesib o'tdi — Bullish!")
+alertcondition(emaCrossBear,   "EMA Bearish Cross",     "EMA 50 EMA 200 ni kesib o'tdi — Bearish!")
+alertcondition(bullDiv,        "RSI Bullish Divergence","RSI Bullish Divergence aniqlandi!")
+alertcondition(bearDiv,        "RSI Bearish Divergence","RSI Bearish Divergence aniqlandi!")
