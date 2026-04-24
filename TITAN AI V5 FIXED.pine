@@ -1,0 +1,233 @@
+//@version=5
+indicator("🤖 TITAN AI V5 - PRO CAPITAL 🚀", overlay=true, max_lines_count=500, max_labels_count=500)
+
+// ═════════════════════════════════════════════════════════
+// ⚙️ MONEY MANAGEMENT & RISK
+// ═════════════════════════════════════════════════════════
+grp_money = "💰 Money Management"
+account_size    = input.float(2000.0, "Boshlang'ich Kapital ($)",  minval=1.0,  group=grp_money)
+risk_per_trade  = input.float(1.0,    "Har bir treyd uchun risk (%)", minval=0.1, step=0.1, group=grp_money)
+gold_pip_value  = input.float(10.0,   "Pip qiymati ($ / 0.01 lot)", minval=0.1, group=grp_money,
+     tooltip="XAUUSD: 1 pip = $10 / standart lot. 0.01 lot = $0.10")
+
+grp_trend = "📈 Trend Sozlamalari"
+htf_val  = input.timeframe("60", "Yuqori Taymfreym (Trend)", group=grp_trend)
+ema_slow = input.int(200, "Slow EMA (HTF Trend)", minval=10,  group=grp_trend)
+ema_fast = input.int(50,  "Fast EMA (LTF Filtr)", minval=5,   group=grp_trend)
+
+grp_signal = "🎯 Signal Sozlamalari"
+swing_len    = input.int(5,   "Swing Uzunligi (Pivot)",  minval=2, maxval=20, group=grp_signal)
+atr_sl_mult  = input.float(2.0, "ATR × SL",  minval=0.5, step=0.5, group=grp_signal)
+rr_ratio     = input.float(2.5, "Risk/Reward", minval=1.0, step=0.5, group=grp_signal)
+rsi_filter   = input.bool(true, "RSI Filtri ishlatish", group=grp_signal)
+rsi_len      = input.int(14,  "RSI Davri", minval=5, group=grp_signal)
+
+// ═════════════════════════════════════════════════════════
+// 🧠 TREND HISOBLASH
+// ═════════════════════════════════════════════════════════
+htf_ema_val   = request.security(syminfo.tickerid, htf_val, ta.ema(close, ema_slow), lookahead=barmerge.lookahead_off)
+ltf_ema_fast  = ta.ema(close, ema_fast)
+
+bullish_trend = close > htf_ema_val
+bearish_trend = close < htf_ema_val
+
+// ═════════════════════════════════════════════════════════
+// 📐 PIVOT — REPAINTING OLDINI OLISH
+// bar_index[swing_len] ishlatamiz: pivot confirm bo'lganida signal beramiz
+// ═════════════════════════════════════════════════════════
+ph_raw = ta.pivothigh(high, swing_len, swing_len)
+pl_raw = ta.pivotlow (low,  swing_len, swing_len)
+
+// Oxirgi tasdiqlangan pivot'larni saqlash
+var float last_ph = na
+var float last_pl = na
+if not na(ph_raw)
+    last_ph := ph_raw
+if not na(pl_raw)
+    last_pl := pl_raw
+
+// ═════════════════════════════════════════════════════════
+// 📊 RSI FILTRI
+// ═════════════════════════════════════════════════════════
+rsi_val     = ta.rsi(close, rsi_len)
+rsi_ok_buy  = not rsi_filter or rsi_val < 70   // Overbought'dan qochish
+rsi_ok_sell = not rsi_filter or rsi_val > 30   // Oversold'dan qochish
+
+// ═════════════════════════════════════════════════════════
+// 🚨 SIGNAL MANTIQI (Likvidlik + Trend + RSI)
+// ═════════════════════════════════════════════════════════
+atr_val = ta.atr(14)
+
+// BUY: Bullish trend, quyi pivot yutildi va narx qaytdi + Bullish candle
+buy_signal = bullish_trend
+     and not na(last_pl)
+     and low  < last_pl          // Likvidlik yig'ildi (sweep)
+     and close > last_pl         // Qaytish (rejection)
+     and close > open            // Bullish candle
+     and close > ltf_ema_fast    // LTF filtr
+     and rsi_ok_buy
+
+// SELL: Bearish trend, yuqori pivot yutildi va narx qaytdi + Bearish candle
+sell_signal = bearish_trend
+     and not na(last_ph)
+     and high  > last_ph         // Likvidlik yig'ildi (sweep)
+     and close < last_ph         // Qaytish (rejection)
+     and close < open            // Bearish candle
+     and close < ltf_ema_fast    // LTF filtr
+     and rsi_ok_sell
+
+// ═════════════════════════════════════════════════════════
+// 🎯 LOT VA RISK HISOBLASH — TO'G'RILANGAN
+// Formula: Lot = Risk_$ / (SL_pips × pip_value_per_lot)
+// ═════════════════════════════════════════════════════════
+sl_dist    = atr_val * atr_sl_mult
+risk_amt   = account_size * (risk_per_trade / 100)
+
+// pip_value_per_lot: 1 standart lot uchun 1 pip = $10 (XAUUSD)
+// 0.01 lot uchun: $0.10. Lot = risk_amt / (sl_pips × 10)
+sl_pips    = sl_dist / syminfo.mintick     // SL masofasi piplarda
+lot_raw    = risk_amt / (sl_pips * gold_pip_value * syminfo.mintick * 100)
+trade_lot  = math.max(math.round(lot_raw, 2), 0.01)
+
+// ═════════════════════════════════════════════════════════
+// 📈 WIN RATE TRACKER — TO'G'RILANGAN STATE MACHINE
+// ═════════════════════════════════════════════════════════
+var int   total_trades = 0
+var int   wins         = 0
+var int   losses       = 0
+var float entry_price  = na
+var float tp_track     = na
+var float sl_track     = na
+var bool  in_trade     = false
+var bool  is_buy_trade = false
+
+// Ochiq pozitsiyani kuzatish
+if in_trade
+    if is_buy_trade
+        if high >= tp_track
+            wins        := wins + 1
+            in_trade    := false
+        else if low <= sl_track
+            losses      := losses + 1
+            in_trade    := false
+    else
+        if low <= tp_track
+            wins        := wins + 1
+            in_trade    := false
+        else if high >= sl_track
+            losses      := losses + 1
+            in_trade    := false
+
+// Yangi signal kelganda yangi pozitsiya oching (faqat pozitsiya yo'q bo'lsa)
+if buy_signal and not in_trade
+    total_trades  := total_trades + 1
+    in_trade      := true
+    is_buy_trade  := true
+    entry_price   := close
+    sl_track      := close - sl_dist
+    tp_track      := close + (sl_dist * rr_ratio)
+
+if sell_signal and not in_trade
+    total_trades  := total_trades + 1
+    in_trade      := true
+    is_buy_trade  := false
+    entry_price   := close
+    sl_track      := close + sl_dist
+    tp_track      := close - (sl_dist * rr_ratio)
+
+wr = total_trades > 0 ? (wins / total_trades) * 100 : 0.0
+
+// ═════════════════════════════════════════════════════════
+// 🚀 VIZUAL SIGNALLAR
+// ═════════════════════════════════════════════════════════
+if buy_signal
+    sl_level = close - sl_dist
+    tp_level = close + (sl_dist * rr_ratio)
+    lbl_txt  = "💎 BUY SETUP\n"
+         + "📦 Lot: "   + str.tostring(trade_lot, "#.##") + "\n"
+         + "💰 Risk: $" + str.tostring(math.round(risk_amt, 2)) + "\n"
+         + "🛑 SL: "    + str.tostring(sl_level,  "#.##") + "\n"
+         + "🎯 TP: "    + str.tostring(tp_level,  "#.##")
+    label.new(bar_index, low, lbl_txt,
+         color=color.new(color.green, 10),
+         textcolor=color.white,
+         style=label.style_label_up,
+         size=size.small)
+    line.new(bar_index, close,    bar_index + 15, close,    color=color.yellow, style=line.style_dashed)
+    line.new(bar_index, sl_level, bar_index + 15, sl_level, color=color.red,    width=2)
+    line.new(bar_index, tp_level, bar_index + 15, tp_level, color=color.lime,   width=2)
+
+if sell_signal
+    sl_level = close + sl_dist
+    tp_level = close - (sl_dist * rr_ratio)
+    lbl_txt  = "☢️ SELL SETUP\n"
+         + "📦 Lot: "   + str.tostring(trade_lot, "#.##") + "\n"
+         + "💰 Risk: $" + str.tostring(math.round(risk_amt, 2)) + "\n"
+         + "🛑 SL: "    + str.tostring(sl_level,  "#.##") + "\n"
+         + "🎯 TP: "    + str.tostring(tp_level,  "#.##")
+    label.new(bar_index, high, lbl_txt,
+         color=color.new(color.red, 10),
+         textcolor=color.white,
+         style=label.style_label_down,
+         size=size.small)
+    line.new(bar_index, close,    bar_index + 15, close,    color=color.yellow, style=line.style_dashed)
+    line.new(bar_index, sl_level, bar_index + 15, sl_level, color=color.red,    width=2)
+    line.new(bar_index, tp_level, bar_index + 15, tp_level, color=color.lime,   width=2)
+
+// HTF EMA chizig'i
+plot(htf_ema_val,  "HTF EMA 200", color=color.orange, linewidth=2)
+plot(ltf_ema_fast, "LTF EMA 50",  color=color.aqua,   linewidth=1)
+
+// ═════════════════════════════════════════════════════════
+// 📊 PROFESSIONAL DASHBOARD — TO'LDIRILGAN
+// ═════════════════════════════════════════════════════════
+var table dash = table.new(position.top_right, 2, 8,
+     bgcolor=color.new(#131722, 10),
+     border_width=1, border_color=color.gray,
+     frame_color=color.gold, frame_width=1)
+
+if barstate.islast
+    // Sarlavha
+    table.cell(dash, 0, 0, "🤖 TITAN V5 PRO",
+         text_color=color.gold, text_size=size.normal, bgcolor=#1e2a38, colspan=2)
+
+    // Kapital
+    table.cell(dash, 0, 1, "💰 Kapital:",    text_color=color.gray,  bgcolor=#1a1f2e)
+    table.cell(dash, 1, 1, "$" + str.tostring(account_size, "#.##"),
+         text_color=color.white, bgcolor=#1a1f2e)
+
+    // Trend
+    table.cell(dash, 0, 2, "📈 HTF Trend:",  text_color=color.gray,  bgcolor=#1a1f2e)
+    table.cell(dash, 1, 2,
+         bullish_trend ? "BULLISH 📈" : "BEARISH 📉",
+         text_color=bullish_trend ? color.lime : color.red,
+         bgcolor=bullish_trend ? color.new(color.green, 80) : color.new(color.red, 80))
+
+    // RSI
+    table.cell(dash, 0, 3, "📊 RSI:",        text_color=color.gray,  bgcolor=#1a1f2e)
+    table.cell(dash, 1, 3, str.tostring(math.round(rsi_val, 1)),
+         text_color=rsi_val > 70 ? color.red : rsi_val < 30 ? color.lime : color.white,
+         bgcolor=#1a1f2e)
+
+    // Win Rate
+    wr_color = wr >= 60 ? color.lime : wr >= 45 ? color.orange : color.red
+    table.cell(dash, 0, 4, "🏆 Win Rate:",   text_color=color.gray,  bgcolor=#1a1f2e)
+    table.cell(dash, 1, 4, str.tostring(math.round(wr, 1)) + "%",
+         text_color=wr_color,
+         bgcolor=wr >= 60 ? color.new(color.green, 80) : color.new(color.red, 80))
+
+    // Jami savdolar
+    table.cell(dash, 0, 5, "📋 W/L/Total:",  text_color=color.gray,  bgcolor=#1a1f2e)
+    table.cell(dash, 1, 5,
+         str.tostring(wins) + "W / " + str.tostring(losses) + "L / " + str.tostring(total_trades),
+         text_color=color.white, bgcolor=#1a1f2e)
+
+    // Tavsiya etiladigan lot
+    table.cell(dash, 0, 6, "📦 Lot (joriy):", text_color=color.gray, bgcolor=#1a1f2e)
+    table.cell(dash, 1, 6, str.tostring(trade_lot, "#.##"),
+         text_color=color.orange, bgcolor=#1a1f2e)
+
+    // Risk summasi
+    table.cell(dash, 0, 7, "⚠️ Risk ($):",   text_color=color.gray,  bgcolor=#1a1f2e)
+    table.cell(dash, 1, 7, "$" + str.tostring(math.round(risk_amt, 2)),
+         text_color=color.yellow, bgcolor=#1a1f2e)
