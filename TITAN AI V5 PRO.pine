@@ -1,0 +1,296 @@
+//@version=5
+indicator("🤖 TITAN AI V5 - PRO CAPITAL 🚀", overlay=true, maxlinescount=500, maxlabelscount=500)
+
+// ═══════════════════════════════════════════════════════════════
+// ⚙️ MONEY MANAGEMENT & RISK
+// ═══════════════════════════════════════════════════════════════
+grpmoney = "💰 Money Management"
+accountsize   = input.float(2000.0, "Kapital ($)",             minval=1.0,  group=grpmoney)
+riskpertrade  = input.float(1.0,    "Risk har treyd (%)",      minval=0.1,  step=0.1, group=grpmoney)
+maxslpoints   = input.float(30.0,   "Max SL masofasi (point)", minval=5.0,  step=1.0, group=grpmoney,
+                 tooltip="Bu chegara oshsa signal o'tkazib yuboriladi. Gold 15-30 tavsiya.")
+rrratio       = input.float(2.5,    "TP/SL nisbat (RR)",       minval=1.0,  step=0.1, group=grpmoney)
+slbuffer      = input.float(0.3,    "SL Buffer (ATR koeff.)",  minval=0.05, step=0.05, group=grpmoney,
+                 tooltip="Swing tashqarisiga qo'shimcha buffer. 0.3 = ATR*0.3")
+
+grptrend = "📈 Trend Sozlamalari"
+htfval   = input.timeframe("60",  "HTF Taymfreym", group=grptrend)
+emaslow  = input.int(200, "Slow EMA (HTF trend)",  group=grptrend)
+swinglen = input.int(5,   "Swing uzunligi",         group=grptrend, minval=3, maxval=10)
+
+// ═══════════════════════════════════════════════════════════════
+// 🧠 HTF TREND FILTRI
+// ═══════════════════════════════════════════════════════════════
+htfema       = request.security(syminfo.tickerid, htfval, ta.ema(close, emaslow))
+bullishtrend = close > htfema
+bearishtrend = close < htfema
+
+// ═══════════════════════════════════════════════════════════════
+// 📌 SWING HIGH / LOW — LIKVIDLIK DARAJALARI
+// ═══════════════════════════════════════════════════════════════
+ph = ta.pivothigh(high, swinglen, swinglen)
+pl = ta.pivotlow (low,  swinglen, swinglen)
+
+var float lastpl     = na
+var float lastph     = na
+var int   lastpl_bar = na
+var int   lastph_bar = na
+
+if not na(pl)
+    lastpl     := pl
+    lastpl_bar := bar_index - swinglen
+if not na(ph)
+    lastph     := ph
+    lastph_bar := bar_index - swinglen
+
+// Swing chiziqlarini ko'rsatish
+if not na(ph)
+    line.new(bar_index - swinglen, ph, bar_index, ph,
+             color=color.new(color.red, 60), width=1, style=line.style_dotted)
+if not na(pl)
+    line.new(bar_index - swinglen, pl, bar_index, pl,
+             color=color.new(color.lime, 60), width=1, style=line.style_dotted)
+
+// ═══════════════════════════════════════════════════════════════
+// 📐 ATR — DINAMIK FILTR
+// ═══════════════════════════════════════════════════════════════
+atr = ta.atr(14)
+
+// ═══════════════════════════════════════════════════════════════
+// 🎯 AQLLI SL HISOBLASH  (Likvidlik tagiga / ustiga)
+// ═══════════════════════════════════════════════════════════════
+// BUY uchun: SL = lastpl TAGIGA (swing low dan pastga + buffer)
+// SELL uchun: SL = lastph USTIGA (swing high dan tepaga + buffer)
+//
+// Mantiq: market maker likvidlikni yig'adi (stop hunt) keyin harakat boshlaydi.
+// SL shu likvidlik tagida bo'lishi kerak — bu erga kelsa trend buzilib ketgan.
+
+float buysl_price  = na
+float sellsl_price = na
+float buy_sldist   = na
+float sell_sldist  = na
+
+if not na(lastpl)
+    buysl_price := lastpl - atr * slbuffer   // Swing low dan pastga buffer
+    buy_sldist  := close - buysl_price
+
+if not na(lastph)
+    sellsl_price := lastph + atr * slbuffer  // Swing high dan tepaga buffer
+    sell_sldist  := sellsl_price - close
+
+// ═══════════════════════════════════════════════════════════════
+// 🚨 SIGNAL MANTIQI  (Faqat SL chegarasi ichida)
+// ═══════════════════════════════════════════════════════════════
+// BUY: Bullish + Likvidlik sweep pastdan + SL oqilona
+buysignal  = bullishtrend
+          and not na(lastpl)
+          and low < lastpl                   // Likvidlik yig'ildi (stop hunt)
+          and close > lastpl                 // Narx qaytib keldi
+          and close > open                   // Bullish mum
+          and buy_sldist <= maxslpoints      // ✅ SL chegarasi tekshiruvi
+          and buy_sldist > 0
+
+// SELL: Bearish + Likvidlik sweep yuqoridan + SL oqilona
+sellsignal = bearishtrend
+          and not na(lastph)
+          and high > lastph                  // Likvidlik yig'ildi (stop hunt)
+          and close < lastph                 // Narx qaytib keldi
+          and close < open                   // Bearish mum
+          and sell_sldist <= maxslpoints     // ✅ SL chegarasi tekshiruvi
+          and sell_sldist > 0
+
+// ═══════════════════════════════════════════════════════════════
+// 💰 LOT HISOBLASH  (Gold uchun to'g'ri formula)
+// ═══════════════════════════════════════════════════════════════
+// Gold formula: Lot = RiskSumma / (SL_points * 100)
+// 1 lot Gold = 100 oz, 1 point harakat = $100 (1 lot uchun)
+// Misol: $2000 * 1% = $20 risk / (15 point * 100) = 0.013 lot ≈ 0.01 lot
+
+float tradelot = na
+float sldist   = na
+
+if buysignal
+    sldist    := buy_sldist
+    riskamt    = accountsize * (riskpertrade / 100)
+    tradelot  := math.round(riskamt / (sldist * 100), 2)
+    tradelot  := math.max(tradelot, 0.01)
+
+if sellsignal
+    sldist    := sell_sldist
+    riskamt    = accountsize * (riskpertrade / 100)
+    tradelot  := math.round(riskamt / (sldist * 100), 2)
+    tradelot  := math.max(tradelot, 0.01)
+
+// ═══════════════════════════════════════════════════════════════
+// 📊 WIN RATE TRACKER
+// ═══════════════════════════════════════════════════════════════
+var int   totaltrades = 0
+var int   wins        = 0
+var float wr          = 0.0
+
+if buysignal or sellsignal
+    totaltrades += 1
+
+if buysignal and ta.crossover(high, close + buy_sldist * rrratio)
+    wins += 1
+if sellsignal and ta.crossunder(low, close - sell_sldist * rrratio)
+    wins += 1
+
+wr := totaltrades > 0 ? (wins / totaltrades) * 100 : 0.0
+
+// ═══════════════════════════════════════════════════════════════
+// 🖼️ VIZUAL SIGNALLAR  (Label + Chiziqlar)
+// ═══════════════════════════════════════════════════════════════
+if buysignal and not na(tradelot)
+    sl = buysl_price
+    tp = close + buy_sldist * rrratio
+    riskUSD  = tradelot * buy_sldist * 100
+    profUSD  = tradelot * buy_sldist * rrratio * 100
+
+    label.new(bar_index, low,
+              "💎 BUY\n" +
+              "⏰ " + timeframe.period + "m\n" +
+              "📦 Lot: "    + str.tostring(tradelot, "#.##") + "\n" +
+              "🛑 SL: "     + str.tostring(sl, "#.##") +
+                  " (" + str.tostring(buy_sldist, "#.#") + " pt)\n" +
+              "🎯 TP: "     + str.tostring(tp, "#.##") + "\n" +
+              "⚠️ Risk: $"  + str.tostring(riskUSD, "#.##") + "\n" +
+              "💵 Profit: $" + str.tostring(profUSD, "#.##"),
+              color     = color.new(#00c853, 0),
+              textcolor = color.white,
+              style     = label.style_label_up,
+              size      = size.normal)
+
+    line.new(bar_index, close, bar_index+15, close, color=color.yellow,           style=line.style_dashed)
+    line.new(bar_index, sl,    bar_index+15, sl,    color=color.red,    width=2)
+    line.new(bar_index, tp,    bar_index+15, tp,    color=color.lime,   width=2)
+    // Swing low ni belgilash
+    line.new(lastpl_bar, lastpl, bar_index, lastpl, color=color.new(color.aqua, 40), style=line.style_dotted)
+
+if sellsignal and not na(tradelot)
+    sl = sellsl_price
+    tp = close - sell_sldist * rrratio
+    riskUSD  = tradelot * sell_sldist * 100
+    profUSD  = tradelot * sell_sldist * rrratio * 100
+
+    label.new(bar_index, high,
+              "☢️ SELL\n" +
+              "⏰ " + timeframe.period + "m\n" +
+              "📦 Lot: "    + str.tostring(tradelot, "#.##") + "\n" +
+              "🛑 SL: "     + str.tostring(sl, "#.##") +
+                  " (" + str.tostring(sell_sldist, "#.#") + " pt)\n" +
+              "🎯 TP: "     + str.tostring(tp, "#.##") + "\n" +
+              "⚠️ Risk: $"  + str.tostring(riskUSD, "#.##") + "\n" +
+              "💵 Profit: $" + str.tostring(profUSD, "#.##"),
+              color     = color.new(#d50000, 0),
+              textcolor = color.white,
+              style     = label.style_label_down,
+              size      = size.normal)
+
+    line.new(bar_index, close, bar_index+15, close, color=color.yellow,           style=line.style_dashed)
+    line.new(bar_index, sl,    bar_index+15, sl,    color=color.red,    width=2)
+    line.new(bar_index, tp,    bar_index+15, tp,    color=color.lime,   width=2)
+    line.new(lastph_bar, lastph, bar_index, lastph, color=color.new(color.orange, 40), style=line.style_dotted)
+
+// ═══════════════════════════════════════════════════════════════
+// 📋 DASHBOARD  (Yuqori o'ng, aniq ko'rinadi)
+// ═══════════════════════════════════════════════════════════════
+var table dash = table.new(
+     position.top_right, 2, 8,
+     bgcolor      = color.new(#0d1117, 0),
+     border_width = 1,
+     border_color = color.new(color.gray, 50),
+     frame_width  = 2,
+     frame_color  = color.gold)
+
+if barstate.islast
+    // --- Sarlavha ---
+    table.cell(dash, 0, 0, "🤖 TITAN V5 PRO",
+               text_color=color.gold,  bgcolor=color.new(#1a1f2e, 0), text_size=size.normal)
+    table.cell(dash, 1, 0, "💰 $" + str.tostring(accountsize, "#"),
+               text_color=color.white, bgcolor=color.new(#1a1f2e, 0), text_size=size.normal)
+
+    // --- HTF Trend ---
+    table.cell(dash, 0, 1, "📈 HTF Trend",
+               text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 1,
+               bullishtrend ? "BULLISH 🟢" : "BEARISH 🔴",
+               text_color = bullishtrend ? color.lime : color.red,
+               bgcolor    = bullishtrend ? color.new(color.green, 80) : color.new(color.red, 80),
+               text_size  = size.small)
+
+    // --- Win Rate ---
+    table.cell(dash, 0, 2, "🏆 Win Rate",
+               text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 2,
+               str.tostring(wr, "#.#") + "%  (" + str.tostring(wins) + "/" + str.tostring(totaltrades) + ")",
+               text_color = color.white,
+               bgcolor    = wr >= 55 ? color.new(color.green, 70) :
+                            wr >= 45 ? color.new(color.orange, 70) :
+                                       color.new(color.red, 70),
+               text_size  = size.small)
+
+    // --- Lot ---
+    table.cell(dash, 0, 3, "📦 So'ngi Lot",
+               text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 3,
+               not na(tradelot) ? str.tostring(tradelot, "#.##") + " lot" : "— kutilmoqda",
+               text_color=color.orange, text_size=size.small)
+
+    // --- SL masofasi ---
+    table.cell(dash, 0, 4, "📏 SL masofa",
+               text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 4,
+               not na(sldist) ? str.tostring(sldist, "#.#") + " pt" : "—",
+               text_color = not na(sldist) and sldist <= maxslpoints ? color.lime : color.red,
+               text_size  = size.small)
+
+    // --- Risk summa ---
+    table.cell(dash, 0, 5, "⚠️ Risk ($)",
+               text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 5,
+               "$" + str.tostring(accountsize * riskpertrade / 100, "#.##"),
+               text_color=color.yellow, text_size=size.small)
+
+    // --- Max SL chegarasi ---
+    table.cell(dash, 0, 6, "🚧 Max SL",
+               text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 6,
+               str.tostring(maxslpoints, "#") + " pt  |  RR 1:" + str.tostring(rrratio, "#.#"),
+               text_color=color.aqua, text_size=size.small)
+
+    // --- Taymfreym ---
+    table.cell(dash, 0, 7, "⏰ TF",
+               text_color=color.gray, text_size=size.small)
+    table.cell(dash, 1, 7, timeframe.period + " min",
+               text_color=color.white, text_size=size.small)
+
+// ═══════════════════════════════════════════════════════════════
+// 📡 TELEGRAM WEBHOOK — ALERT CONDITIONS
+// ═══════════════════════════════════════════════════════════════
+// TradingView → Webhook → Serveringiz → Telegram Bot
+// Alert xabari JSON formatida yuboriladi
+
+buyMsg = '{"signal":"BUY",' +
+         '"symbol":"'     + syminfo.ticker     + '",' +
+         '"timeframe":"'  + timeframe.period   + '",' +
+         '"price":"'      + str.tostring(close, "#.##")     + '",' +
+         '"sl":"'         + str.tostring(buysl_price, "#.##") + '",' +
+         '"tp":"'         + str.tostring(close + buy_sldist * rrratio, "#.##") + '",' +
+         '"lot":"'        + str.tostring(tradelot, "#.##")  + '",' +
+         '"sldist":"'     + str.tostring(buy_sldist, "#.#") + '",' +
+         '"risk_usd":"'   + str.tostring(accountsize * riskpertrade / 100, "#.##") + '"}'
+
+sellMsg = '{"signal":"SELL",' +
+          '"symbol":"'     + syminfo.ticker      + '",' +
+          '"timeframe":"'  + timeframe.period    + '",' +
+          '"price":"'      + str.tostring(close, "#.##")      + '",' +
+          '"sl":"'         + str.tostring(sellsl_price, "#.##") + '",' +
+          '"tp":"'         + str.tostring(close - sell_sldist * rrratio, "#.##") + '",' +
+          '"lot":"'        + str.tostring(tradelot, "#.##")   + '",' +
+          '"sldist":"'     + str.tostring(sell_sldist, "#.#") + '",' +
+          '"risk_usd":"'   + str.tostring(accountsize * riskpertrade / 100, "#.##") + '"}'
+
+alertcondition(buysignal,  "💎 BUY Signal",  buyMsg)
+alertcondition(sellsignal, "☢️ SELL Signal", sellMsg)
+alertcondition(buysignal or sellsignal, "🔔 Har qanday Signal", "Yangi signal keldi: {{ticker}} {{interval}}")
